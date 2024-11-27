@@ -100,11 +100,11 @@ div#videos > video {
 
 #remoteVideo {
     border: 3px solid #2980b9;
-    background: red !important;
+    background: blue !important;
 }
 
 #remoteVideo:not([srcObject]) {
-    background: red !important;
+    background: blue !important;
     position: relative;
     min-height: 200px;
 }

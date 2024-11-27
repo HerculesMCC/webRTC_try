@@ -41,6 +41,7 @@ function init() {
 }
 
 async function createRoom() { 
+  console.log('🏠 Création de la room...');
   document.querySelector('#createBtn').disabled = true;
   document.querySelector('#joinBtn').disabled = true;
   const db = firebase.firestore();
@@ -96,40 +97,59 @@ async function createRoom() {
 
   // Configuration de l'événement track pour recevoir le flux distant
   peerConnection.addEventListener('track', event => {
-    console.log('🎥 CALLER: Track reçu', {
-        trackType: event.track.kind,
-        streamId: event.streams[0].id,
-        trackEnabled: event.track.enabled
-    });
-    
     const remoteVideo = document.querySelector('#remoteVideo');
     
-    // N'assignons le srcObject que si ce n'est pas déjà fait
     if (!remoteVideo.srcObject) {
-        // Configurons exactement comme localVideo
+        console.log('🎥 Configuration de la vidéo distante...');
+        
+        // Configuration de base
         remoteVideo.srcObject = event.streams[0];
         remoteVideo.autoplay = true;
         remoteVideo.playsInline = true;
-        console.log('🎥 CALLER: Video distante configurée', {
-            autoplay: remoteVideo.autoplay,
-            playsInline: remoteVideo.playsInline,
-            srcObject: !!remoteVideo.srcObject
+        remoteVideo.muted = false;  // S'assurer que ce n'est pas muet
+        
+        // Fonction de tentative de lecture
+        const tryPlay = async () => {
+            console.log('🎯 Tentative de lecture...');
+            try {
+                await remoteVideo.play();
+                console.log('✅ Lecture démarrée avec succès');
+            } catch (error) {
+                console.error('❌ Erreur de lecture:', error);
+            }
+        };
+        
+        // Listeners avec tentatives de lecture
+        remoteVideo.onloadedmetadata = () => {
+            console.log('📺 Metadata chargée');
+            tryPlay();
+        };
+        
+        remoteVideo.oncanplay = () => {
+            console.log('📺 Peut commencer la lecture');
+            tryPlay();
+        };
+        
+        // Vérification immédiate de l'état
+        console.log('🔍 État actuel:', {
+            readyState: remoteVideo.readyState,
+            paused: remoteVideo.paused,
+            srcObject: !!remoteVideo.srcObject,
+            stream: {
+                active: event.streams[0].active,
+                tracks: event.streams[0].getTracks().map(t => ({
+                    kind: t.kind,
+                    enabled: t.enabled,
+                    muted: t.muted,
+                    readyState: t.readyState
+                }))
+            }
         });
+        
+        // Tentative différée
+        setTimeout(tryPlay, 1000);
     }
   });
-
-  // Ajoutons des listeners pour tous les événements possibles sur la vidéo distante
-  const remoteVideo = document.querySelector('#remoteVideo');
-  remoteVideo.onloadedmetadata = () => console.log('📺 Metadata chargée');
-  remoteVideo.onloadeddata = () => console.log('📺 Data chargée');
-  remoteVideo.oncanplay = () => {
-      console.log('📺 Peut commencer la lecture');
-      remoteVideo.play()
-          .then(() => console.log('▶️ Lecture démarrée'))
-          .catch(e => console.error('❌ Erreur lecture:', e));
-  };
-  remoteVideo.onplaying = () => console.log('📺 Lecture en cours');
-  remoteVideo.onerror = (e) => console.error('❌ Erreur vidéo:', e);
 
   // Ajoutons aussi des listeners pour l'état de la connexion
   peerConnection.onconnectionstatechange = () => {
@@ -145,89 +165,140 @@ async function createRoom() {
   };
 }
 
-function joinRoom() {
-  document.querySelector('#createBtn').disabled = true;
-  document.querySelector('#joinBtn').disabled = true;
+async function joinRoom() {
+    console.log('🚪 Tentative de rejoindre la room...');
+    document.querySelector('#createBtn').disabled = true;
+    document.querySelector('#joinBtn').disabled = true;
 
-  document.querySelector('#confirmJoinBtn').
-      addEventListener('click', async () => {
-        roomId = document.querySelector('#room-id').value.trim();
-        
-        // Vérification que l'ID n'est pas vide
-        if (!roomId) {
-            alert('Veuillez entrer un ID de room valide');
-            return;
-        }
+    document.querySelector('#confirmJoinBtn').
+        addEventListener('click', async () => {
+            roomId = document.querySelector('#room-id').value.trim();
+            
+            // Vérification que l'ID n'est pas vide
+            if (!roomId) {
+                alert('Veuillez entrer un ID de room valide');
+                return;
+            }
 
-        console.log('Join room: ', roomId);
-        document.querySelector(
-            '#currentRoom').innerText = `Current room is "${roomId}" - You are the callee!`;
-        await joinRoomById(roomId);
-      }, {once: true});
-  roomDialog.open();
+            console.log('Join room: ', roomId);
+            
+            // Vérification de l'existence de la room
+            const db = firebase.firestore();
+            const roomRef = db.collection('rooms').doc(`${roomId}`);
+            const roomSnapshot = await roomRef.get();
+            
+            if (!roomSnapshot.exists) {
+                console.error('❌ Cette room n\'existe pas !');
+                alert('Cette room n\'existe pas !');
+                // Réactiver les boutons
+                document.querySelector('#createBtn').disabled = false;
+                document.querySelector('#joinBtn').disabled = false;
+                return;
+            }
+            
+            console.log('✅ Room trouvée:', roomSnapshot.data());
+            
+            // Vérifier si la room contient une offre
+            const roomData = roomSnapshot.data();
+            if (!roomData.offer) {
+                console.error('❌ La room ne contient pas d\'offre !');
+                alert('La room est invalide (pas d\'offre)');
+                return;
+            }
+            
+            console.log('📝 Offre reçue:', roomData.offer);
+            
+            document.querySelector(
+                '#currentRoom').innerText = `Current room is "${roomId}" - You are the callee!`;
+            await joinRoomById(roomId);
+        }, {once: true});
+    roomDialog.open();
 }
 
 async function joinRoomById(roomId) {
-  const db = firebase.firestore();
-  const roomRef = db.collection('rooms').doc(`${roomId}`);
-  const roomSnapshot = await roomRef.get();
+    const db = firebase.firestore();
+    const roomRef = db.collection('rooms').doc(`${roomId}`);
+    const roomSnapshot = await roomRef.get();
+    
+    peerConnection = new RTCPeerConnection(configuration);
+    
+    // Configuration du stream distant AVANT tout
+    const remoteVideo = document.querySelector('#remoteVideo');
+    
+    // Gestion des tracks distants
+    peerConnection.ontrack = event => {
+        console.log('🎥 Track reçu:', {
+            kind: event.track.kind,
+            readyState: event.track.readyState,
+            enabled: event.track.enabled,
+            muted: event.track.muted
+        });
+        
+        if (event.track.kind === 'video') {
+            console.log('📺 Configuration vidéo distante');
+            remoteVideo.srcObject = event.streams[0];
+            remoteVideo.autoplay = true;
+            remoteVideo.playsInline = true;
+            
+            // Ajout des listeners pour mieux suivre le chargement
+            remoteVideo.onloadedmetadata = () => {
+                console.log('📺 Metadata chargée');
+                remoteVideo.play()
+                    .then(() => console.log('▶️ Lecture démarrée après metadata'))
+                    .catch(e => console.error('❌ Erreur lecture:', e));
+            };
+            
+            remoteVideo.onloadeddata = () => console.log('📺 Data chargée');
+            remoteVideo.oncanplay = () => {
+                console.log('📺 Peut commencer la lecture');
+                remoteVideo.play()
+                    .then(() => console.log('▶️ Lecture démarrée après canplay'))
+                    .catch(e => console.error('❌ Erreur lecture:', e));
+            };
+            remoteVideo.onplaying = () => console.log('📺 Lecture en cours');
+            remoteVideo.onerror = (e) => console.error('❌ Erreur vidéo:', e);
+            
+            // Forcer la lecture après un court délai
+            setTimeout(() => {
+                console.log('⏱️ Tentative de lecture forcée');
+                remoteVideo.play()
+                    .then(() => console.log('▶️ Lecture démarrée après délai'))
+                    .catch(e => console.error('❌ Erreur lecture forcée:', e));
+            }, 1000);
+            
+            // Logs détaillés
+            console.log('📊 État détaillé de l\'élément vidéo:', {
+                srcObject: !!remoteVideo.srcObject,
+                autoplay: remoteVideo.autoplay,
+                playsInline: remoteVideo.playsInline,
+                videoWidth: remoteVideo.videoWidth,
+                videoHeight: remoteVideo.videoHeight,
+                paused: remoteVideo.paused,
+                currentTime: remoteVideo.currentTime,
+                readyState: remoteVideo.readyState,
+                networkState: remoteVideo.networkState,
+                error: remoteVideo.error
+            });
+        }
+    };
 
-  console.log('Room exists:', roomSnapshot.exists);
-  
-  // Vérification de l'existence de la room
-  if (!roomSnapshot.exists) {
-    showError('Cette room n\'existe pas !');
-    // Réactiver les boutons
-    document.querySelector('#createBtn').disabled = false;
-    document.querySelector('#joinBtn').disabled = false;
-    // Effacer le message de room courante
-    document.querySelector('#currentRoom').innerText = '';
-    return;
-  }
-  
-  peerConnection = new RTCPeerConnection(configuration);
-  
-  // Configuration du stream distant AVANT tout
-  remoteStream = new MediaStream();
-  document.querySelector('#remoteVideo').srcObject = remoteStream;
-
-  // Gestion des tracks distants
-  peerConnection.addEventListener('track', event => {
-    console.log('🎥 Callee: Received remote track:', event.streams[0]);
-    document.querySelector('#remoteVideo').srcObject = event.streams[0];
-  });
-
-  // Ajout des tracks locaux
-  localStream.getTracks().forEach(track => {
-    console.log('📤 CALLEE: Envoi du track', {
-        type: track.kind,
-        enabled: track.enabled
+    // Ajout des tracks locaux
+    localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
     });
-    peerConnection.addTrack(track, localStream);
-  });
 
-  // Traitement de l'offre
-  const offer = roomSnapshot.data().offer;
-  await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-  
-  // Création et envoi de la réponse
-  const answer = await peerConnection.createAnswer();
-  await peerConnection.setLocalDescription(answer);
+    // Traitement de l'offre
+    const offer = roomSnapshot.data().offer;
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
 
-  console.log('📤 Sending answer to Firestore:', {
-    type: answer.type,
-    sdp: answer.sdp
-  });
-  await roomRef.update({
-    answer: {
-      type: answer.type,
-      sdp: answer.sdp
-    }
-  });
-  console.log('📤 Answer sent to Firestore');
-
-  // Gestion des ICE candidates
-  await collectIceCandidates(roomRef, peerConnection, 'calleeCandidates', 'callerCandidates');
+    await roomRef.update({
+        answer: {
+            type: answer.type,
+            sdp: answer.sdp
+        }
+    });
 }
 
 async function openUserMedia(e) {
@@ -235,14 +306,11 @@ async function openUserMedia(e) {
       {video: true, audio: true});
   document.querySelector('#localVideo').srcObject = stream;
   localStream = stream;
-
   
-  // Créer un nouveau MediaStream vide
-  remoteStream = new MediaStream();
-  document.querySelector('#remoteVideo').srcObject = remoteStream;
+  console.log('Stream setup:', {
+      localStream: !!localStream
+  });
   
-  console.log('LocalS tream:', document.querySelector('#localVideo').srcObject); //log
-  console.log('Remote stream:', remoteStream);  //log
   document.querySelector('#cameraBtn').disabled = true;
   document.querySelector('#joinBtn').disabled = false;
   document.querySelector('#createBtn').disabled = false;
@@ -250,6 +318,12 @@ async function openUserMedia(e) {
 }
 
 async function hangUp(e) {
+  // Avant de nettoyer
+  console.log('🧹 État avant nettoyage:', {
+    remoteVideoHasSource: !!document.querySelector('#remoteVideo').srcObject,
+    peerConnection: !!peerConnection
+  });
+
   const tracks = document.querySelector('#localVideo').srcObject.getTracks();
   tracks.forEach(track => {
     track.stop();
@@ -287,6 +361,11 @@ async function hangUp(e) {
   }
 
   document.location.reload(true);
+
+  // Après nettoyage
+  console.log('🧹 État après nettoyage:', {
+    remoteVideoHasSource: !!document.querySelector('#remoteVideo').srcObject
+  });
 }
 
 function registerPeerConnectionListeners() {
@@ -309,8 +388,35 @@ function registerPeerConnectionListeners() {
   });
 
   peerConnection.ontrack = (event) => {
-    console.log('🎥 ontrack event:', event);
-    console.log('🎥 Remote streams:', event.streams);
+    console.log('🎥 Track reçu:', event.track.kind);
+    
+    if (event.track.kind === 'video') {
+        const remoteVideo = document.querySelector('#remoteVideo');
+        console.log('📺 Configuration de la vidéo distante');
+        remoteVideo.srcObject = event.streams[0];
+        remoteVideo.autoplay = true;
+        remoteVideo.playsInline = true;
+        
+        // Ajoutons ces lignes pour forcer la lecture et vérifier l'état
+        remoteVideo.onloadedmetadata = () => {
+            console.log('📊 Métadonnées vidéo chargées');
+            remoteVideo.play()
+                .then(() => console.log('▶️ Lecture démarrée'))
+                .catch(e => console.error('❌ Erreur de lecture:', e));
+        };
+        
+        // Vérifions l'état du stream
+        console.log('🌊 État du stream:', {
+            active: event.streams[0].active,
+            id: event.streams[0].id,
+            tracks: event.streams[0].getTracks().map(t => ({
+                kind: t.kind,
+                enabled: t.enabled,
+                muted: t.muted,
+                readyState: t.readyState
+            }))
+        });
+    }
   };
 
   peerConnection.onicecandidate = (event) => {
